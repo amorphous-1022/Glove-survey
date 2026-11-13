@@ -56,6 +56,13 @@
   .empty{color:var(--muted);font-size:.9rem}
   .count{color:var(--muted);font-size:.85rem;font-weight:400;margin-left:6px}
   .notice{background:var(--box-soft);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:.88rem;margin-top:14px;display:none}
+  .req-card h2{margin-bottom:4px}
+  .req-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+  .req-btn{padding:16px 10px;border:0;border-radius:12px;font-size:1rem;font-weight:700;color:#fff;cursor:pointer;font-family:inherit;line-height:1.3;transition:.12s}
+  .req-btn small{display:block;font-weight:500;font-size:.78rem;opacity:.9;margin-top:2px}
+  .req-btn.lab{background:var(--lab)} .req-btn.box{background:var(--box)}
+  .req-btn.armed{outline:3px solid var(--ink);outline-offset:2px}
+  .req-btn:disabled{opacity:.5;cursor:default}
 </style>
 </head>
 <body>
@@ -85,6 +92,18 @@
     <div class="msg" id="msg"></div>
     <p class="hint" style="margin:10px 0 0">같은 이름으로 다시 제출하면 이전 응답이 수정됩니다.</p>
   </form>
+
+  <section class="card req-card">
+    <h2>🙋 장갑 요청하기</h2>
+    <p class="hint">장갑이 필요하면 이름을 적고 버튼을 눌러 주세요. 설문에 적은 사이즈로 담당자에게 알림이 갑니다.</p>
+    <label class="title" for="reqName">이름<span class="req">*</span></label>
+    <input type="text" id="reqName" maxlength="30" placeholder="설문에 적은 이름과 똑같이 입력" autocomplete="off">
+    <div class="req-btns">
+      <button type="button" class="req-btn lab" data-type="lab">실험용 장갑<small>필요해요</small></button>
+      <button type="button" class="req-btn box" data-type="box">글로브박스용 장갑<small>필요해요</small></button>
+    </div>
+    <div class="msg" id="reqMsg"></div>
+  </section>
 
   <section class="card">
     <h2>응답 현황<span class="count" id="total"></span></h2>
@@ -153,11 +172,58 @@ $("form").addEventListener("submit", async e=>{
       await fetch(SCRIPT_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body});
       ok=true;
     }
-    if(ok){ setMsg(`${updated?"수정":"제출"} 완료! (${name} · 실험용 ${lab} · 글로브박스용 ${box})`,"ok"); btn.textContent="응답 수정하기"; setTimeout(loadStats,800); }
+    if(ok){ setMsg(`${updated?"수정":"제출"} 완료! (${name} · 실험용 ${lab} · 글로브박스용 ${box})`,"ok"); btn.textContent="응답 수정하기"; setTimeout(loadStats,800); if(!$("reqName").value) $("reqName").value=name; }
     else setMsg("입력값을 확인해 주세요.","err");
   }catch(err){ setMsg("제출하지 못했습니다. 잠시 후 다시 시도해 주세요.","err"); }
   finally{ btn.disabled=false; }
 });
+
+// ───── 장갑 요청 ─────
+const LABEL = {lab:"실험용 장갑", box:"글로브박스용 장갑"};
+function setReqMsg(t,c){ const m=$("reqMsg"); m.textContent=t; m.className="msg "+(c||""); }
+try{ const saved=localStorage.getItem("gloveName"); if(saved) $("reqName").value=saved; }catch(_){}
+let armed=null, armTimer=null;
+function disarm(){ document.querySelectorAll(".req-btn").forEach(b=>{ b.classList.remove("armed"); b.querySelector("small").textContent="필요해요"; }); armed=null; }
+
+document.querySelectorAll(".req-btn").forEach(btn=>btn.addEventListener("click", async ()=>{
+  const type=btn.dataset.type;
+  const name=$("reqName").value.trim();
+  if(!name){ setReqMsg("이름을 입력해 주세요.","err"); $("reqName").focus(); return; }
+  if(!configured){ setReqMsg("알림 기능이 아직 연결되지 않았습니다. 관리자에게 문의해 주세요.","err"); return; }
+  // 실수 방지: 한 번 더 눌러야 요청
+  if(armed!==type){
+    disarm(); armed=type; btn.classList.add("armed");
+    btn.querySelector("small").textContent="한 번 더 누르면 요청";
+    clearTimeout(armTimer); armTimer=setTimeout(disarm,4000);
+    setReqMsg(`${name}님, ${LABEL[type]}을 요청하려면 버튼을 한 번 더 눌러 주세요.`);
+    return;
+  }
+  clearTimeout(armTimer); disarm();
+  document.querySelectorAll(".req-btn").forEach(b=>b.disabled=true);
+  setReqMsg("요청 보내는 중…");
+  try{ localStorage.setItem("gloveName",name); }catch(_){}
+  const body=JSON.stringify({action:"request",name,type});
+  try{
+    let d=null;
+    try{
+      const r=await fetch(SCRIPT_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body});
+      d=await r.json();
+    }catch(_){
+      await fetch(SCRIPT_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body});
+      d={ok:true,unknown:true};
+    }
+    if(d.ok){
+      setReqMsg(d.unknown ? `요청을 보냈습니다. (${LABEL[type]})` : `요청 완료! ${LABEL[type]} ${d.size} 사이즈로 담당자에게 알렸습니다.`,"ok");
+    }else if(d.error==="not_found"){
+      setReqMsg(`"${name}" 이름으로 된 설문 응답이 없습니다. 위 설문에 적은 이름과 똑같이 입력하거나, 설문을 먼저 제출해 주세요.`,"err");
+    }else if(d.error==="cooldown"){
+      setReqMsg("방금 같은 요청을 보냈습니다. 1분 뒤에 다시 시도해 주세요.","err");
+    }else{
+      setReqMsg("요청을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.","err");
+    }
+  }catch(err){ setReqMsg("요청을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.","err"); }
+  finally{ document.querySelectorAll(".req-btn").forEach(b=>b.disabled=false); }
+}));
 </script>
 </body>
 </html>
